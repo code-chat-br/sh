@@ -1,5 +1,4 @@
 #!/bin/bash
-whiptail --title "CODECHAT API - FORM-DATA" --msgbox "Pressione ENTER para iniciar a instalação:" --fb 10 50
 
 echo ""
 echo " ██████╗ ██████╗ ██████╗ ███████╗ ██████╗██╗  ██╗ █████╗ ████████╗     █████╗ ██████╗ ██╗
@@ -16,6 +15,8 @@ echo " ██████╗ ██████╗ ██████╗ ██�
 ██║     ╚██████╔╝██║  ██║██║ ╚═╝ ██║      ██████╔╝██║  ██║   ██║   ██║  ██║
 ╚═╝      ╚═════╝ ╚═╝  ╚═╝╚═╝     ╚═╝      ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝"
 echo ""
+
+echo "Iniciando a instalação..."
 
 sudo apt update -y
 sudo apy upgrade -y
@@ -37,6 +38,8 @@ echo "Criando rede para os containers se comunicarem"
 sudo docker network create api_network -d bridge
 echo ""
 
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+
 echo "Verificando se o traefik já está instalado..."
 if sudo docker ps -a --format '{{.Names}}' | grep -Eq "^traefik\$"; then
     echo "Traefik já está instalado e em execução."
@@ -48,6 +51,8 @@ else
         echo -e "\nErro: O email não pode estar vazio. O processo foi interrompido."
         exit 1
     fi
+
+    email="$(echo -e "${email}" | tr -d '[:space:]')"
 
     echo "Criando volume"
     sudo docker volume create traefik_certificates
@@ -123,7 +128,7 @@ else
     echo "│ RABBITMQ                                │"
     echo "├─────────────────────────────────────────┤"
     echo "│ User: root                              │"
-    echo "│ Pass: $RABBITMQ_DEFAULT_PASS            │"
+    echo "│ Pass: $RABBITMQ_DEFAULT_PASS  │"
     echo "└─────────────────────────────────────────┘"
     echo ""
 fi
@@ -210,13 +215,19 @@ while true; do
         kill -INT $$
     fi
 done
-cd ~/Projects
+cd $DIR
 
 echo ""
 echo "Gerando senha de usuário root da aplicação"
 AUTHENTICATION_GLOBAL_AUTH_TOKEN=$(date +%s | sha256sum | base64 | head -c 64)
 
-IMAGE_NAME_INPUT=$(whiptail --title "NOME DA IMAGEM" --inputbox "Digite o nome com o qual dejeja builda a imagem:\n* Formato: repository/tag:version\n* Exemplo: codechat/form-data-api:v1.0.0\n\nDefault: codechat/form-data-api:latest" --fb 15 65 3>&1 1>&2 2>&3)
+echo ""
+echo "Digite o nome com o qual dejeja builda a imagem."
+echo "* Formato: repository/tag:version"
+echo "* Exemplo: codechat/form-data-api:v1.0.0"
+read -p "Digite o nome da imagem: " IMAGE_NAME_INPUT
+
+IMAGE_NAME_INPUT="$(echo -e "${IMAGE_NAME_INPUT}" | tr -d '[:space:]')"
 
 if [ -z "$IMAGE_NAME_INPUT" ]; then
   IMAGE_NAME_INPUT=codechat/form-data-api:latest
@@ -248,27 +259,62 @@ if sudo docker ps -a --format '{{.Names}}' | grep -Eq "^codechat_vdm\$"; then
 else
   echo "Instando o VDM"
 
-  docker pull codechat/vdm:latest-slim
+  sudo docker pull codechat/vdm:latest-slim
 
-  # Gerando password
+  echo "Gerando token de usuário root da aplicação"
   VDM_AUTH_TOKEN=$(date +%s | sha256sum | base64 | head -c 32)
 
-  docker run -d \
-    --name codechat_vdm \
-    --network api_network \
-    -p 3000:3000 \
-    -v /var/run/docker.sock:/var/run/docker.sock \
-    -e DOCKER_DEFAULT_IMAGE=$IMAGE_NAME_INPUT \
-    -e DOCKER_NETWORK=api_network \
-    -e DOCKER_SOCKET=/var/run/docker.sock \
-    -e AUTH_TOKEN=$VDM_AUTH_TOKEN \
-    -l traefik.enable=true \
-    -l traefik.http.routers.codechat_vdm.rule=PathPrefix\(\`\/vdm\`\) \
-    -l traefik.http.routers.codechat_vdm.entrypoints=web \
-    -l traefik.http.routers.codechat_vdm.service=codechat_vdm \
-    -l traefik.http.services.codechat_vdm.loadbalancer.server.port=3000 \
-    --restart always \
-    codechat/vdm:latest-slim
+  echo ""
+  echo "Digite o domínio padrão da aplicação."
+  echo "Deixe vazio caso não for trabalhar com ssl."
+  read -p "Domínio padrão: " DEFAULT_DOMAIN
+
+  echo ""
+  echo "Dominio padrão: $DEFAULT_DOMAIN"
+  echo ""
+
+  # Remove espaços em branco
+  DEFAULT_DOMAIN="$(echo -e "${DEFAULT_DOMAIN}" | tr -d '[:space:]')"
+
+  if [ -z "$DEFAULT_DOMAIN" ]; then
+    echo "SSL não habilitado"
+    sudo docker run -d \
+        --name codechat_vdm \
+        --network api_network \
+        -p 3000:3000 \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -e DOCKER_DEFAULT_IMAGE=$IMAGE_NAME_INPUT \
+        -e DOCKER_NETWORK=api_network \
+        -e DOCKER_SOCKET=/var/run/docker.sock \
+        -e AUTH_TOKEN=$VDM_AUTH_TOKEN \
+        -l traefik.enable=true \
+        -l "traefik.http.routers.codechat_vdm.rule=PathPrefix(\`/vdm\`) || PathPrefix(\`/run\`) || PathPrefix(\`/list\`) || PathPrefix(\`/start\`) || PathPrefix(\`/stop\`) || PathPrefix(\`/restart\`) || PathPrefix(\`/delete\`)" \
+        -l traefik.http.routers.codechat_vdm.entrypoints=web \
+        -l traefik.http.routers.codechat_vdm.service=codechat_vdm \
+        -l traefik.http.services.codechat_vdm.loadbalancer.server.port=3000 \
+        --restart always \
+        codechat/vdm:latest-slim
+  else
+    echo "SSL habilitado"
+    sudo docker run -d \
+        --name codechat_vdm \
+        --network api_network \
+        -p 3000:3000 \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -e DOCKER_DEFAULT_IMAGE=$IMAGE_NAME_INPUT \
+        -e DOCKER_NETWORK=api_network \
+        -e DOCKER_SOCKET=/var/run/docker.sock \
+        -e AUTH_TOKEN=$VDM_AUTH_TOKEN \
+        -e DEFAULT_DOMAIN=$DEFAULT_DOMAIN \
+        -l traefik.enable=true \
+        -l "traefik.http.routers.codechat_vdm.rule=PathPrefix(\`/vdm\`) || PathPrefix(\`/run\`) || PathPrefix(\`/list\`) || PathPrefix(\`/start\`) || PathPrefix(\`/stop\`) || PathPrefix(\`/restart\`) || PathPrefix(\`/delete\`)" \
+        -l traefik.http.routers.codechat_vdm.entrypoints=web_secure \
+        -l traefik.http.routers.codechat_vdm.tls.certresolver=letsencrypt_resolver \
+        -l traefik.http.routers.codechat_vdm.service=codechat_vdm \
+        -l traefik.http.services.codechat_vdm.loadbalancer.server.port=3000 \
+        --restart always \
+        codechat/vdm:latest-slim
+  fi
 
   echo "┌─────────────────────────────────────────┐"
   echo "│ VDM TOKEN                               │"
@@ -312,3 +358,5 @@ echo "┌───────────────────────�
 echo "│         Instalação finalizada             │"
 echo "└───────────────────────────────────────────┘"
 echo ""
+
+rm -rf $DIR/install.sh
